@@ -8,6 +8,10 @@ from datetime import datetime
 import uvicorn
 import secrets
 
+import os
+
+from fastapi import Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 # ── Database setup ──────────────────────────────────────────────────────────
 DATABASE_URL = "sqlite:///./rfid.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -63,6 +67,32 @@ Base.metadata.create_all(bind=engine)
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="RFID Access Control")
 templates = Jinja2Templates(directory="templates")
+
+security = HTTPBasic()
+
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "labadmin123")
+
+# funkcija za proveru admin logina
+def require_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    username_ok = secrets.compare_digest(
+        credentials.username,
+        ADMIN_USERNAME
+    )
+
+    password_ok = secrets.compare_digest(
+        credentials.password,
+        ADMIN_PASSWORD
+    )
+
+    if not (username_ok and password_ok):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    return credentials.username
 
 def get_db():
     with Session(engine) as db:
@@ -230,8 +260,23 @@ async def add_reservation(
 #  WEB DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ispravljen student endpoint
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
+async def student_dashboard(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "is_admin": False
+        }
+    )
+
+# novi admin endpoint
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(
+    request: Request,
+    admin: str = Depends(require_admin)
+):
     now = datetime.now()
 
     with Session(engine) as db:
@@ -264,16 +309,20 @@ async def dashboard(request: Request):
             PinAccessLog.access == False
         ).scalar()
 
-    return templates.TemplateResponse(request, "dashboard.html", {
-        "reservations": reservations,
-        "access_logs": access_logs,
-        "total": total,
-        "active": active,
-        "granted": granted,
-        "denied": denied,
-        "now": now
-    })
-
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "is_admin": True,
+            "reservations": reservations,
+            "access_logs": access_logs,
+            "total": total,
+            "active": active,
+            "granted": granted,
+            "denied": denied,
+            "now": now
+        }
+    )
 
 # ── Cards HTMX partials ──────────────────────────────────────────────────────
 
