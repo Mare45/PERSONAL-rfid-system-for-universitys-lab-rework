@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAF Lab Login</title>
+
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #070b16;
+            color: #e7eaff;
+            font-family: Arial, sans-serif;
+        }
+
+        .login-box {
+            width: 380px;
+            padding: 32px;
+            background: #121a2f;
+            border: 1px solid #263454;
+            border-radius: 14px;
+        }
+
+        h1 {
+            margin-top: 0;
+            color: #7c6cff;
+        }
+
+        label {
+            display: block;
+            margin-top: 16px;
+            margin-bottom: 6px;
+        }
+
+        input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 11px;
+            background: #0d1427;
+            border: 1px solid #263454;
+            border-radius: 6px;
+            color: white;
+        }
+
+        button {
+            width: 100%;
+            margin-top: 22px;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            background: #7c6cff;
+            color: white;
+            cursor: pointer;
+        }
+
+        .error {
+            margin-top: 16px;
+            color: #ff5d73;
+        }
+
+        .success {
+            margin-top: 16px;
+            color: #7c6cff;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="login-box">
+
+    <h1>Login</h1>
+
+    <form method="post" action="/login">
+
+        <label>Email</label>
+        <input type="email" name="email" required>
+
+        <label>Password</label>
+        <input type="password" name="password" required>
+
+        <button type="submit">
+            LOGIN
+        </button>
+
+    </form>
+
+    {% if error %}
+        <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if success %}
+        <div class="success">{{ success }}</div>
+    {% endif %}
+
+</div>
+
+</body>
+</html>

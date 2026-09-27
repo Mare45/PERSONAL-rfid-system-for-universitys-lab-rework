@@ -10,8 +10,9 @@ import secrets
 
 import os
 
-from fastapi import Depends
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.middleware.sessions import SessionMiddleware
+
+import hashlib
 # ── Database setup ──────────────────────────────────────────────────────────
 DATABASE_URL = "sqlite:///./rfid.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -34,6 +35,32 @@ class ScanLog(Base):
     user_name   = Column(String, nullable=True)   # null = unknown card
     access      = Column(Boolean, nullable=False)
     scanned_at  = Column(DateTime, default=datetime.utcnow)
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    full_name = Column(String, nullable=False)
+
+    email = Column(
+        String,
+        unique=True,
+        index=True,
+        nullable=False
+    )
+
+    password_hash = Column(String, nullable=False)
+    password_salt = Column(String, nullable=False)
+
+    role = Column(String, nullable=False, default="student")
+
+    is_active = Column(Boolean, default=True)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
 
 # new class for reservations
 class Reservation(Base):
@@ -66,33 +93,66 @@ Base.metadata.create_all(bind=engine)
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="RFID Access Control")
+SESSION_SECRET = os.getenv(
+    "SESSION_SECRET",
+    "dev-secret-change-this-later"
+)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    same_site="lax",
+    https_only=False
+)
+
 templates = Jinja2Templates(directory="templates")
 
-security = HTTPBasic()
+def hash_password(password: str, salt: str = None):
+    if salt is None:
+        salt = secrets.token_hex(16)
 
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "labadmin123")
+    password_hash = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode(),
+        salt.encode(),
+        200_000
+    ).hex()
 
-# funkcija za proveru admin logina
-def require_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    username_ok = secrets.compare_digest(
-        credentials.username,
-        ADMIN_USERNAME
+    return password_hash, salt
+
+
+def verify_password(password: str, password_hash: str, salt: str):
+    test_hash, _ = hash_password(password, salt)
+
+    return secrets.compare_digest(
+        test_hash,
+        password_hash
     )
 
-    password_ok = secrets.compare_digest(
-        credentials.password,
-        ADMIN_PASSWORD
-    )
+def get_current_user(request: Request):
+    user_id = request.session.get("user_id")
 
-    if not (username_ok and password_ok):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+    if not user_id:
+        return None
 
-    return credentials.username
+    with Session(engine) as db:
+        user = db.query(User).filter(
+            User.id == user_id,
+            User.is_active == True
+        ).first()
+
+        return user
+
+def get_admin_user(request: Request):
+    user = get_current_user(request)
+
+    if not user:
+        return None
+
+    if user.role != "admin":
+        return None
+
+    return user
 
 def get_db():
     with Session(engine) as db:
@@ -174,15 +234,62 @@ async def check_pin(payload: PinCheckRequest):
         "access_granted": False
     }
 
+@app.get("/api/calendar/events")
+async def calendar_events(request: Request):
+    user = get_current_user(request)
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="You must be logged in."
+        )
+
+    with Session(engine) as db:
+        reservations = (
+            db.query(Reservation)
+            .filter(Reservation.is_active == True)
+            .order_by(Reservation.start_time.asc())
+            .all()
+        )
+
+        events = []
+
+        for reservation in reservations:
+
+            if user.role == "admin":
+                title = reservation.user_name
+
+            elif reservation.email == user.email:
+                title = "MY RESERVATION"
+
+            else:
+                title = "RESERVED"
+
+            events.append({
+                "id": reservation.id,
+                "title": title,
+                "start": reservation.start_time.isoformat(),
+                "end": reservation.end_time.isoformat()
+            })
+
+    return events
+
 @app.post("/reservations/add", response_class=HTMLResponse)
 async def add_reservation(
-    user_name: str = Form(...),
-    email: str = Form(...),
+    request: Request,
     start_time: str = Form(...),
     end_time: str = Form(...),
     equipment: str = Form(""),
     comment: str = Form("")
 ):
+    user = get_current_user(request)
+
+    if not user:
+        return HTMLResponse(
+            '<div style="color:#ff5d73;">You must be logged in.</div>',
+            status_code=401
+        )
+
     start = datetime.fromisoformat(start_time)
     end = datetime.fromisoformat(end_time)
 
@@ -193,6 +300,29 @@ async def add_reservation(
 
     with Session(engine) as db:
 
+        # Provera preklapanja termina
+        conflict = db.query(Reservation).filter(
+            Reservation.is_active == True,
+            Reservation.start_time < end,
+            Reservation.end_time > start
+        ).first()
+
+        if conflict:
+            return HTMLResponse(
+                '''
+                <div style="
+                    padding:1rem;
+                    border:1px solid #ff5d73;
+                    background:rgba(255,93,115,.08);
+                    border-radius:6px;
+                    color:#ff5d73;
+                ">
+                    THIS TIME SLOT IS ALREADY RESERVED.
+                </div>
+                '''
+            )
+
+        # Generisanje jedinstvenog PIN-a
         while True:
             pin = f"{secrets.randbelow(1000000):06d}"
 
@@ -203,9 +333,10 @@ async def add_reservation(
             if not existing:
                 break
 
+        # Kreiranje rezervacije
         reservation = Reservation(
-            user_name=user_name.strip(),
-            email=email.strip(),
+            user_name=user.full_name,
+            email=user.email,
             pin=pin,
             start_time=start,
             end_time=end,
@@ -256,6 +387,141 @@ async def add_reservation(
         '''
     )
 
+@app.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "register.html",
+        {
+            "error": None,
+            "success": None
+        }
+    )
+
+@app.post("/register", response_class=HTMLResponse)
+async def register_user(
+    request: Request,
+    full_name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...)
+):
+    full_name = full_name.strip()
+    email = email.strip().lower()
+
+    if len(password) < 8:
+        return templates.TemplateResponse(
+            request,
+            "register.html",
+            {
+                "error": "Password must contain at least 8 characters.",
+                "success": None
+            }
+        )
+
+    with Session(engine) as db:
+
+        existing_user = db.query(User).filter(
+            User.email == email
+        ).first()
+
+        if existing_user:
+            return templates.TemplateResponse(
+                request,
+                "register.html",
+                {
+                    "error": "An account with this email already exists.",
+                    "success": None
+                }
+            )
+
+        password_hash, salt = hash_password(password)
+
+        user = User(
+            full_name=full_name,
+            email=email,
+            password_hash=password_hash,
+            password_salt=salt,
+            role="student",
+            is_active=True
+        )
+
+        db.add(user)
+        db.commit()
+
+    return templates.TemplateResponse(
+        request,
+        "register.html",
+        {
+            "error": None,
+            "success": "Account successfully created."
+        }
+    )
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "error": None,
+            "success": None
+        }
+    )
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_user(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...)
+):
+    email = email.strip().lower()
+
+    with Session(engine) as db:
+
+        user = db.query(User).filter(
+            User.email == email,
+            User.is_active == True
+        ).first()
+
+        if not user:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {
+                    "error": "Invalid email or password.",
+                    "success": None
+                }
+            )
+
+        password_ok = verify_password(
+        password,
+        user.password_hash,
+        user.password_salt
+    )
+
+    if not password_ok:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "error": "Invalid email or password.",
+                "success": None
+            }
+        )
+
+    request.session["user_id"] = user.id
+
+    if user.role == "admin":
+        return RedirectResponse(
+            url="/admin",
+            status_code=303
+        )
+
+    return RedirectResponse(
+        url="/student",
+        status_code=303
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  WEB DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
@@ -271,12 +537,59 @@ async def student_dashboard(request: Request):
         }
     )
 
+@app.get("/student", response_class=HTMLResponse)
+async def student_dashboard_logged_in(request: Request):
+
+    user = get_current_user(request)
+
+    if not user:
+        return RedirectResponse(
+            url="/login",
+            status_code=303
+        )
+
+    now = datetime.now()
+
+    with Session(engine) as db:
+        reservations = (
+            db.query(Reservation)
+            .filter(Reservation.email == user.email)
+            .order_by(Reservation.start_time.desc())
+            .all()
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        {
+            "is_admin": False,
+            "user": user,
+            "reservations": reservations,
+            "now": now
+        }
+    )
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+
+    return RedirectResponse(
+        url="/login",
+        status_code=303
+    )
+
 # novi admin endpoint
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_dashboard(
-    request: Request,
-    admin: str = Depends(require_admin)
-):
+async def admin_dashboard(request: Request):
+
+    user = get_admin_user(request)
+
+    if not user:
+        return RedirectResponse(
+            url="/login",
+            status_code=303
+        )
+
     now = datetime.now()
 
     with Session(engine) as db:
@@ -314,6 +627,7 @@ async def admin_dashboard(
         "dashboard.html",
         {
             "is_admin": True,
+            "user": user,
             "reservations": reservations,
             "access_logs": access_logs,
             "total": total,
@@ -385,4 +699,9 @@ async def refresh_logs(request: Request):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        reload=False
+    )

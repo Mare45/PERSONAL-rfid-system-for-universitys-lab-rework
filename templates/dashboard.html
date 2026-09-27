@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RFID Access Control</title>
   <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -490,6 +490,58 @@
       .stats { grid-template-columns: 1fr 1fr; }
       .container { padding: 1rem; }
     }
+
+    .calendar-panel {
+        margin-bottom: 2rem;
+    }
+
+    #calendar {
+        padding: 1rem;
+    }
+
+    .fc {
+        color: var(--text);
+        font-family: var(--sans);
+    }
+
+    .fc .fc-toolbar-title {
+        font-family: var(--mono);
+        font-size: 1.1rem;
+        color: var(--text);
+    }
+
+    .fc .fc-button {
+        background: #151f38;
+        border: 1px solid var(--border);
+        color: var(--text);
+        box-shadow: none;
+    }
+
+    .fc .fc-button:hover,
+    .fc .fc-button-active {
+        background: var(--green) !important;
+        border-color: var(--green) !important;
+        color: #080b14 !important;
+    }
+
+    .fc-theme-standard td,
+    .fc-theme-standard th,
+    .fc-theme-standard .fc-scrollgrid {
+        border-color: var(--border);
+    }
+
+    .fc .fc-col-header-cell-cushion,
+    .fc .fc-timegrid-slot-label-cushion {
+        color: var(--muted);
+    }
+
+    .fc .fc-timegrid-now-indicator-line {
+        border-color: var(--red);
+    }
+
+    .fc-event {
+        cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -503,6 +555,18 @@
 
 <div class="container">
 
+  <div class="panel calendar-panel">
+
+      <div class="panel-header">
+          <span class="panel-title">◆ Lab Availability Calendar</span>
+      </div>
+
+      <div class="panel-body">
+          <div id="calendar"></div>
+      </div>
+
+  </div>
+
   <div class="panel reservation-panel">
   <div class="panel-header">
     <span class="panel-title">◆ Create Lab Reservation</span>
@@ -514,26 +578,6 @@
             hx-post="/reservations/add"
             hx-target="#reservation-result"
             hx-swap="innerHTML">
-
-        <div class="form-row">
-
-          <div class="input-group">
-            <label class="input-label">FULL NAME</label>
-            <input type="text"
-                  name="user_name"
-                  placeholder="Pera Peric"
-                  required>
-          </div>
-
-          <div class="input-group">
-            <label class="input-label">EMAIL</label>
-            <input type="email"
-                  name="email"
-                  placeholder="peraperic@raf.rs"
-                  required>
-          </div>
-
-        </div>
 
         <div class="form-row">
 
@@ -753,6 +797,94 @@
   </div><!-- /grid -->
   {% endif %}
 </div><!-- /container -->
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+
+    const calendarElement = document.getElementById("calendar");
+
+    if (!calendarElement) {
+        return;
+    }
+
+    const calendar = new FullCalendar.Calendar(calendarElement, {
+
+        initialView: "timeGridWeek",
+
+        firstDay: 1,
+
+        allDaySlot: false,
+
+        slotMinTime: "08:00:00",
+        slotMaxTime: "22:00:00",
+
+        nowIndicator: true,
+
+        selectable: true,
+        selectMirror: true,
+
+        // Ne dozvoljava izbor preko postojećeg eventa
+        selectOverlap: false,
+
+        events: "/api/calendar/events",
+
+        headerToolbar: {
+            left: "prev,next today",
+            center: "title",
+            right: "dayGridMonth,timeGridWeek,timeGridDay"
+        },
+
+        select: function(info) {
+
+            const startInput =
+                document.querySelector('input[name="start_time"]');
+
+            const endInput =
+                document.querySelector('input[name="end_time"]');
+
+            if (!startInput || !endInput) {
+                return;
+            }
+
+            startInput.value = formatDateForInput(info.start);
+            endInput.value = formatDateForInput(info.end);
+
+            document.querySelector(".reservation-panel")
+                ?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start"
+                });
+        }
+    });
+
+    calendar.render();
+
+
+    function formatDateForInput(date) {
+
+        const year = date.getFullYear();
+
+        const month = String(
+            date.getMonth() + 1
+        ).padStart(2, "0");
+
+        const day = String(
+            date.getDate()
+        ).padStart(2, "0");
+
+        const hours = String(
+            date.getHours()
+        ).padStart(2, "0");
+
+        const minutes = String(
+            date.getMinutes()
+        ).padStart(2, "0");
+
+        return `${year}-${month}-${day}T${hours}:${minutes}`;
+    }
+
+});
+</script>
 
 </body>
 </html>

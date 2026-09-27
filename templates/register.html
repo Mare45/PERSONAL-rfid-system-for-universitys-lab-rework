@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create RAF Lab Account</title>
+
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            background: #070b16;
+            color: #e7eaff;
+
+            font-family: Arial, sans-serif;
+        }
+
+        .register-box {
+            width: 380px;
+            padding: 32px;
+
+            background: #121a2f;
+            border: 1px solid #263454;
+            border-radius: 14px;
+        }
+
+        h1 {
+            margin-top: 0;
+            color: #7c6cff;
+        }
+
+        label {
+            display: block;
+            margin-top: 16px;
+            margin-bottom: 6px;
+        }
+
+        input {
+            width: 100%;
+            box-sizing: border-box;
+
+            padding: 11px;
+
+            background: #0d1427;
+            border: 1px solid #263454;
+            border-radius: 6px;
+
+            color: white;
+        }
+
+        button {
+            width: 100%;
+            margin-top: 22px;
+            padding: 12px;
+
+            border: none;
+            border-radius: 6px;
+
+            background: #7c6cff;
+            color: white;
+
+            cursor: pointer;
+        }
+
+        .message {
+            margin-top: 16px;
+        }
+
+        .error {
+            color: #ff5d73;
+        }
+
+        .success {
+            color: #7c6cff;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="register-box">
+
+    <h1>Create account</h1>
+
+    <form method="post" action="/register">
+
+        <label>Full name</label>
+        <input
+            type="text"
+            name="full_name"
+            required
+        >
+
+        <label>Email</label>
+        <input
+            type="email"
+            name="email"
+            required
+        >
+
+        <label>Password</label>
+        <input
+            type="password"
+            name="password"
+            minlength="8"
+            required
+        >
+
+        <button type="submit">
+            CREATE ACCOUNT
+        </button>
+
+    </form>
+
+    {% if error %}
+        <div class="message error">
+            {{ error }}
+        </div>
+    {% endif %}
+
+    {% if success %}
+        <div class="message success">
+            {{ success }}
+        </div>
+    {% endif %}
+
+</div>
+
+</body>
+</html>
