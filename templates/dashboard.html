@@ -650,7 +650,101 @@
       <div class="stat-value">{{ denied }}</div>
     </div>
 
+    </div> <!-- /stats -->
+
+    <div class="panel" style="margin-bottom: 2rem;">
+
+  <div class="panel-header">
+    <span class="panel-title">◆ Registered Users</span>
   </div>
+
+  <div class="panel-body" style="padding:0;">
+
+    <div style="max-height:420px; overflow-y:auto;">
+
+      <table>
+
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+
+        <tbody>
+
+          {% for account in users %}
+
+          <tr>
+
+            <td>{{ account.full_name }}</td>
+
+            <td>{{ account.email }}</td>
+
+            <td>
+              {% if account.role == "admin" %}
+                <span class="badge badge-amber">ADMIN</span>
+              {% else %}
+                <span class="badge badge-green">STUDENT</span>
+              {% endif %}
+            </td>
+
+            <td>
+              {% if account.is_active %}
+                <span class="badge badge-green">ACTIVE</span>
+              {% else %}
+                <span class="badge badge-red">DISABLED</span>
+              {% endif %}
+            </td>
+
+            <td>
+              {{ account.created_at.strftime("%d.%m.%Y %H:%M") }}
+            </td>
+
+            <td>
+
+              {% if account.id != user.id %}
+
+              <form
+                method="post"
+                action="/admin/users/{{ account.id }}/delete"
+                onsubmit="return confirm('Delete this user account?');"
+              >
+                <button
+                  type="submit"
+                  class="btn btn-red"
+                >
+                  DELETE
+                </button>
+              </form>
+
+              {% else %}
+
+                <span class="badge badge-muted">
+                  CURRENT ADMIN
+                </span>
+
+              {% endif %}
+
+            </td>
+
+          </tr>
+
+          {% endfor %}
+
+        </tbody>
+
+      </table>
+
+    </div>
+
+  </div>
+  
+</div>
 
   <div class="grid">
 

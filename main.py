@@ -4,7 +4,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Session
-from datetime import datetime
+from datetime import datetime, timedelta
 import uvicorn
 import secrets
 
@@ -13,6 +13,9 @@ import os
 from starlette.middleware.sessions import SessionMiddleware
 
 import hashlib
+
+import smtplib
+from email.message import EmailMessage
 # ── Database setup ──────────────────────────────────────────────────────────
 DATABASE_URL = "sqlite:///./rfid.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -89,6 +92,26 @@ class PinAccessLog(Base):
     access = Column(Boolean, nullable=False)
     attempted_at = Column(DateTime, default=datetime.utcnow)
 
+class EmailVerification(Base):
+    __tablename__ = "email_verifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    full_name = Column(String, nullable=False)
+    email = Column(String, index=True, nullable=False)
+
+    password_hash = Column(String, nullable=False)
+    password_salt = Column(String, nullable=False)
+
+    token_hash = Column(String, nullable=False)
+
+    expires_at = Column(DateTime, nullable=False)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
 Base.metadata.create_all(bind=engine)
 
 # ── App setup ────────────────────────────────────────────────────────────────
@@ -128,6 +151,39 @@ def verify_password(password: str, password_hash: str, salt: str):
         test_hash,
         password_hash
     )
+
+def send_verification_email(recipient_email: str, verification_link: str):
+    sender_email = os.getenv("MAIL_USERNAME")
+    sender_password = os.getenv("MAIL_PASSWORD")
+
+    if not sender_email or not sender_password:
+        raise RuntimeError("Email credentials are not configured.")
+
+    message = EmailMessage()
+
+    message["Subject"] = "RAF Lab - Verify your account"
+    message["From"] = sender_email
+    message["To"] = recipient_email
+
+    message.set_content(
+        f"""
+Hello,
+
+A registration request was made for the RAF Lab Access System.
+
+To verify your RAF email address and create your account, open this link:
+
+{verification_link}
+
+This link expires in 15 minutes.
+
+If you did not request this account, ignore this email.
+"""
+    )
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(sender_email, sender_password)
+        smtp.send_message(message)
 
 def get_current_user(request: Request):
     user_id = request.session.get("user_id")
@@ -408,6 +464,17 @@ async def register_user(
     full_name = full_name.strip()
     email = email.strip().lower()
 
+    # Dozvoljeni su samo RAF nalozi
+    if not email.endswith("@raf.rs"):
+        return templates.TemplateResponse(
+            request,
+            "register.html",
+            {
+                "error": "Registration is allowed only with a @raf.rs email address.",
+                "success": None
+            }
+        )
+
     if len(password) < 8:
         return templates.TemplateResponse(
             request,
@@ -420,6 +487,7 @@ async def register_user(
 
     with Session(engine) as db:
 
+        # Da li nalog već postoji?
         existing_user = db.query(User).filter(
             User.email == email
         ).first()
@@ -434,37 +502,162 @@ async def register_user(
                 }
             )
 
+        # Brišemo eventualni prethodni nepotvrđeni zahtev
+        db.query(EmailVerification).filter(
+            EmailVerification.email == email
+        ).delete()
+
+        # Hashujemo password kao i ranije
         password_hash, salt = hash_password(password)
 
-        user = User(
+        # Ovo je token koji će korisnik dobiti u email linku
+        verification_token = secrets.token_urlsafe(32)
+
+        # U bazu ne čuvamo originalni token
+        token_hash = hashlib.sha256(
+            verification_token.encode()
+        ).hexdigest()
+
+        verification = EmailVerification(
             full_name=full_name,
             email=email,
             password_hash=password_hash,
             password_salt=salt,
-            role="student",
-            is_active=True
+            token_hash=token_hash,
+            expires_at=datetime.utcnow() + timedelta(minutes=15)
         )
 
-        db.add(user)
+        db.add(verification)
         db.commit()
+        db.refresh(verification)
+
+        verification_link = (
+            f"http://127.0.0.1:8000/verify-email"
+            f"?id={verification.id}"
+            f"&token={verification_token}"
+        )
+
+        # SAMO ZA DEVELOPMENT
+        print("\nEMAIL VERIFICATION LINK:")
+        print(verification_link)
+        print()
+
+        send_verification_email(
+        email,
+        verification_link
+    )
 
     return templates.TemplateResponse(
         request,
         "register.html",
         {
             "error": None,
-            "success": "Account successfully created."
+            "success": "Verification link sent. Check your RAF email."
         }
+    )
+
+@app.get("/verify-email")
+async def verify_email(
+    verification_id: int = None,
+    id: int = None,
+    token: str = ""
+):
+    # Koristimo id iz verification linka
+    verification_id = id
+
+    if not verification_id or not token:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid verification link."
+        )
+
+    token_hash = hashlib.sha256(
+        token.encode()
+    ).hexdigest()
+
+    with Session(engine) as db:
+
+        verification = db.query(EmailVerification).filter(
+            EmailVerification.id == verification_id
+        ).first()
+
+        if not verification:
+            raise HTTPException(
+                status_code=400,
+                detail="Verification request not found."
+            )
+
+        # Token istekao
+        if datetime.utcnow() > verification.expires_at:
+            db.delete(verification)
+            db.commit()
+
+            raise HTTPException(
+                status_code=400,
+                detail="Verification link has expired."
+            )
+
+        # Proveravamo token
+        if not secrets.compare_digest(
+            token_hash,
+            verification.token_hash
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid verification token."
+            )
+
+        # Proveravamo još jednom da nalog nije u međuvremenu napravljen
+        existing_user = db.query(User).filter(
+            User.email == verification.email
+        ).first()
+
+        if existing_user:
+            db.delete(verification)
+            db.commit()
+
+            return RedirectResponse(
+                url="/login?verified=1",
+                status_code=303
+            )
+
+        # TEK OVDE nastaje pravi nalog
+        user = User(
+            full_name=verification.full_name,
+            email=verification.email,
+            password_hash=verification.password_hash,
+            password_salt=verification.password_salt,
+            role="student",
+            is_active=True
+        )
+
+        db.add(user)
+
+        # Token postaje neupotrebljiv
+        db.delete(verification)
+
+        db.commit()
+
+    return RedirectResponse(
+        url="/login?verified=1",        
+        status_code=303
     )
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    verified = request.query_params.get("verified")
+
+    success_message = None
+
+    if verified == "1":
+        success_message = "Email verified successfully. You can now log in."
+
     return templates.TemplateResponse(
         request,
         "login.html",
         {
             "error": None,
-            "success": None
+            "success": success_message
         }
     )
 
@@ -593,6 +786,12 @@ async def admin_dashboard(request: Request):
     now = datetime.now()
 
     with Session(engine) as db:
+        users = (
+            db.query(User)
+            .order_by(User.created_at.desc())
+            .all()
+        )
+
         reservations = (
             db.query(Reservation)
             .order_by(Reservation.start_time.asc())
@@ -628,6 +827,7 @@ async def admin_dashboard(request: Request):
         {
             "is_admin": True,
             "user": user,
+            "users": users,
             "reservations": reservations,
             "access_logs": access_logs,
             "total": total,
@@ -636,6 +836,46 @@ async def admin_dashboard(request: Request):
             "denied": denied,
             "now": now
         }
+    )
+
+@app.post("/admin/users/{user_id}/delete")
+async def delete_user_account(
+    request: Request,
+    user_id: int
+):
+    admin = get_admin_user(request)
+
+    if not admin:
+        return RedirectResponse(
+            url="/login",
+            status_code=303
+        )
+
+    # Admin ne sme slučajno da obriše sam sebe
+    if admin.id == user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot delete your own admin account."
+        )
+
+    with Session(engine) as db:
+
+        target_user = db.query(User).filter(
+            User.id == user_id
+        ).first()
+
+        if not target_user:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found."
+            )
+
+        db.delete(target_user)
+        db.commit()
+
+    return RedirectResponse(
+        url="/admin",
+        status_code=303
     )
 
 # ── Cards HTMX partials ──────────────────────────────────────────────────────
